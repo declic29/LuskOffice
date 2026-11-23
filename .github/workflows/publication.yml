@@ -1,0 +1,82 @@
+# Lusk Office : fabrique LuskOffice-Setup-Windows.exe avec les dernières versions publiées des
+# quatre logiciels, et le dépose dans une Release en brouillon.
+#
+# Les dépôts des logiciels sont publics : le jeton de l'action suffit pour lire leurs Releases.
+# S'ils deviennent privés, ajouter un secret LUSK_TOKEN (jeton personnel, lecture des dépôts).
+name: Publication
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.LUSK_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installateurs des quatre logiciels (dernières versions publiées)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force payload | Out-Null
+          $apps = @(
+            @{ key = 'tab';   repo = 'declic29/LuskTab';    file = 'Lusk-Tab-Windows.msi' },
+            @{ key = 'texte'; repo = 'declic29/lusktx';     file = 'Lusk-Texte-Windows.msi' },
+            @{ key = 'diapo'; repo = 'declic29/lusk-diapo'; file = 'Lusk-Diapo-Windows.msi' },
+            @{ key = 'pdf';   repo = 'declic29/lusk_pdf';   file = 'Lusk-Pdf-Windows.msi' }
+          )
+          foreach ($a in $apps) {
+            $tag = gh release view --repo $a.repo --json tagName --jq .tagName
+            if (-not $tag) { throw "Aucune version publiée pour $($a.repo)" }
+            gh release download $tag --repo $a.repo --pattern $a.file --dir payload --clobber
+            if (-not (Test-Path "payload/$($a.file)")) { throw "$($a.file) manque dans la Release $tag de $($a.repo)" }
+            "$($a.key)=$($tag.TrimStart('v'))" | Add-Content payload/versions.txt
+            Write-Host "$($a.repo) $tag : $((Get-Item "payload/$($a.file)").Length) octets"
+          }
+          Get-Content payload/versions.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Vérifications
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Compiler
+        run: cargo build --release
+
+      - name: Release (brouillon)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $tag = "v$version"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/LuskOfficeSetup.exe "dist/LuskOffice-Setup-$version-Windows.exe"
+          Copy-Item target/release/LuskOfficeSetup.exe dist/LuskOffice-Setup-Windows.exe
+          $lines = Get-Content payload/versions.txt
+          $notes = @(
+            "Lusk Office $version, publié par l'association Lusk.",
+            "",
+            "Téléchargez LuskOffice-Setup-Windows.exe : un seul fichier, où l'on coche les logiciels à installer.",
+            "",
+            "Versions incluses :"
+          ) + ($lines | ForEach-Object { "- $_" })
+          $notes | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/notes.md"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag (Get-ChildItem dist).FullName --clobber
+          } else {
+            gh release create $tag (Get-ChildItem dist).FullName --draft --target $env:GITHUB_SHA --title "Lusk Office $version" --notes-file "$env:RUNNER_TEMP/notes.md"
+          }
+          Write-Host "Brouillon prêt : https://github.com/$env:GH_REPO/releases"
