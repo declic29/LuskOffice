@@ -69,6 +69,8 @@ struct Setup {
     icons: Vec<TextureHandle>,
     statuses: Vec<Status>,
     selected: Vec<bool>,
+    /// Ajouter les icônes sur le Bureau (coché d'office).
+    desktop: bool,
     page: Page,
 }
 
@@ -147,6 +149,7 @@ impl Setup {
             page: demo(ctx, &selected),
             statuses,
             selected,
+            desktop: true,
         }
     }
 }
@@ -159,6 +162,7 @@ fn demo(ctx: &egui::Context, selected: &[bool]) -> Page {
     if cfg!(not(windows)) && std::env::var("LUSK_DEMO").as_deref() == Ok("install") {
         return Page::Installing(install::start(
             (0..selected.len()).filter(|i| selected[*i]).collect(),
+            true,
             ctx.clone(),
         ));
     }
@@ -264,6 +268,11 @@ impl Setup {
             );
             self.card(ui, i, rect);
         }
+        // Sous les cartes : les icônes sur le Bureau.
+        let row = Rect::from_min_size(pos2(inner.left(), cards_top + 222.0), vec2(330.0, 28.0));
+        if checkbox(ui, row, "Ajouter les icônes sur le Bureau", self.desktop).clicked() {
+            self.desktop = !self.desktop;
+        }
         // Le bas : la note et les boutons.
         let count = self.selected.iter().filter(|s| **s).count();
         let bottom = inner.bottom();
@@ -302,7 +311,11 @@ impl Setup {
         );
         if primary_button(ui, install, "Installer", count > 0).clicked() {
             let chosen = (0..APPS.len()).filter(|i| self.selected[*i]).collect();
-            return Some(Page::Installing(install::start(chosen, ui.ctx().clone())));
+            return Some(Page::Installing(install::start(
+                chosen,
+                self.desktop,
+                ui.ctx().clone(),
+            )));
         }
         let cancel = Rect::from_min_size(
             pos2(install.left() - 136.0, bottom - 46.0),
@@ -413,8 +426,8 @@ impl Setup {
         inner: Rect,
         progress: &Arc<Mutex<Progress>>,
     ) -> Option<Page> {
-        let (jobs, finished, started) = match progress.lock() {
-            Ok(p) => (p.jobs.clone(), p.finished, p.started),
+        let (jobs, finished, started, desktop) = match progress.lock() {
+            Ok(p) => (p.jobs.clone(), p.finished, p.started, p.desktop),
             Err(_) => return None,
         };
         let painter = ui.painter().clone();
@@ -582,11 +595,45 @@ impl Setup {
                     .filter(|(_, s)| matches!(s, Step::Failed(_)))
                     .map(|(i, _)| *i)
                     .collect();
-                return Some(Page::Installing(install::start(again, ui.ctx().clone())));
+                return Some(Page::Installing(install::start(
+                    again,
+                    desktop,
+                    ui.ctx().clone(),
+                )));
             }
         }
         None
     }
+}
+
+/// Une case à cocher dans le style des cartes : un rond bleu coché, puis le texte.
+fn checkbox(ui: &mut egui::Ui, rect: Rect, label: &str, on: bool) -> egui::Response {
+    let response = ui
+        .interact(rect, ui.make_persistent_id(("case", label)), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let t = ui.ctx().animate_bool(response.id.with("cochée"), on);
+    let painter = ui.painter();
+    let c = pos2(rect.left() + 11.0, rect.center().y);
+    painter.circle_filled(c, 11.0, lerp_color(Color32::WHITE, BLUE, t));
+    let ring = if response.hovered() && !on {
+        BLUE.gamma_multiply(0.6)
+    } else {
+        lerp_color(LINE, BLUE, t)
+    };
+    painter.circle_stroke(c, 11.0, Stroke::new(1.5, ring));
+    if t > 0.0 {
+        let stroke = Stroke::new(2.2, Color32::WHITE.gamma_multiply(t));
+        painter.line_segment([c + vec2(-5.0, 0.5), c + vec2(-1.5, 4.0)], stroke);
+        painter.line_segment([c + vec2(-1.5, 4.0), c + vec2(5.5, -4.0)], stroke);
+    }
+    painter.text(
+        pos2(rect.left() + 32.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        medium(14.5),
+        NAVY,
+    );
+    response
 }
 
 /// Un lien : souligné au survol, la main comme curseur. `left_center` est son début.

@@ -15,6 +15,9 @@ pub struct App {
     /// pour l'utilisateur seul (Windows ne le range alors pas dans les listes habituelles).
     #[cfg_attr(not(windows), allow(dead_code))]
     pub key: &'static str,
+    /// La propriété de son installateur qui ajoute (1) ou non (0) l'icône sur le Bureau.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub desktop: &'static str,
     pub icon: &'static [u8],
 }
 
@@ -23,24 +26,28 @@ pub const APPS: [App; 4] = [
         name: "Lusk Texte",
         what: "Traitement de texte",
         key: "LuskTexte",
+        desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/texte.png"),
     },
     App {
         name: "Lusk Tab",
         what: "Tableur",
         key: "LuskTab",
+        desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/tab.png"),
     },
     App {
         name: "Lusk Diapo",
         what: "Présentations",
         key: "LuskDiapo",
+        desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/diapo.png"),
     },
     App {
         name: "Lusk PDF",
         what: "Atelier PDF",
         key: "LuskPdf",
+        desktop: "INSTALLDESKTOPSHORTCUT",
         icon: include_bytes!("../assets/apps/pdf.png"),
     },
 ];
@@ -210,12 +217,15 @@ pub struct Progress {
     pub finished: bool,
     /// Quand l'installation en cours a commencé, pour animer la barre.
     pub started: Option<std::time::Instant>,
+    /// Les icônes sur le Bureau, comme choisi sur la première page (gardé pour « Réessayer »).
+    pub desktop: bool,
 }
 
 /// Installe les logiciels choisis, l'un après l'autre.
-pub fn start(selected: Vec<usize>, ctx: egui::Context) -> Arc<Mutex<Progress>> {
+pub fn start(selected: Vec<usize>, desktop: bool, ctx: egui::Context) -> Arc<Mutex<Progress>> {
     let progress = Arc::new(Mutex::new(Progress {
         jobs: selected.iter().map(|&i| (i, Step::Waiting)).collect(),
+        desktop,
         ..Default::default()
     }));
     let shared = Arc::clone(&progress);
@@ -225,7 +235,7 @@ pub fn start(selected: Vec<usize>, ctx: egui::Context) -> Arc<Mutex<Progress>> {
                 p.jobs[n].1 = Step::Running;
                 p.started = Some(std::time::Instant::now());
             });
-            let step = install(i);
+            let step = install(i, desktop);
             set(&shared, &ctx, |p| p.jobs[n].1 = step);
         }
         set(&shared, &ctx, |p| p.finished = true);
@@ -241,7 +251,7 @@ fn set(shared: &Arc<Mutex<Progress>>, ctx: &egui::Context, f: impl FnOnce(&mut P
 }
 
 #[cfg(windows)]
-fn install(i: usize) -> Step {
+fn install(i: usize, desktop: bool) -> Step {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let Some((bytes, _)) = PAYLOAD[i] else {
@@ -274,6 +284,7 @@ fn install(i: usize) -> Step {
         .arg(&msi)
         .args(["/qn", "/norestart"])
         .args(scope)
+        .arg(format!("{}={}", APPS[i].desktop, u8::from(desktop)))
         .arg("/l*v")
         .arg(&log)
         .creation_flags(CREATE_NO_WINDOW)
@@ -322,7 +333,7 @@ fn log_says(log: &std::path::Path, text: &str) -> bool {
 
 /// Hors de Windows : une installation pour de faux, pour essayer l'interface.
 #[cfg(not(windows))]
-fn install(i: usize) -> Step {
+fn install(i: usize, _desktop: bool) -> Step {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     if PAYLOAD[i].is_none() {
         return Step::Failed("Ce logiciel n'est pas dans ce paquet.".into());
