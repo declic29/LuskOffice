@@ -1,6 +1,6 @@
 //! Lusk Office : l'installateur de la suite de l'association Lusk. Une fenêtre aux couleurs de
-//! Lusk où l'on coche les logiciels à installer (Lusk Tab, Lusk Texte, Lusk Diapo, Lusk PDF) ;
-//! leurs installateurs Windows sont inclus dans le programme (voir `build.rs`).
+//! Lusk où l'on coche les logiciels à installer (Lusk Texte, Lusk Tab, Lusk Diapo, Lusk PDF,
+//! et l'appli web Lusk.bzh) ; leurs installateurs Windows sont inclus dans le programme (voir `build.rs`).
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -23,7 +23,7 @@ const ORANGE: Color32 = Color32::from_rgb(0xf7, 0x94, 0x1d);
 const GREEN: Color32 = Color32::from_rgb(0x2e, 0x9e, 0x5b);
 const RED: Color32 = Color32::from_rgb(0xd1, 0x3c, 0x3c);
 const LINE: Color32 = Color32::from_rgb(0xd6, 0xe0, 0xec);
-const WINDOW: Vec2 = vec2(980.0, 680.0);
+const WINDOW: Vec2 = vec2(980.0, 740.0);
 
 fn main() -> eframe::Result {
     let icon = image::load_from_memory(include_bytes!("../assets/fox-512.png"))
@@ -259,7 +259,8 @@ impl Setup {
             MUTED,
         );
         let gap = 16.0;
-        let card_w = (inner.width() - 3.0 * gap) / 4.0;
+        let n = APPS.len() as f32;
+        let card_w = (inner.width() - (n - 1.0) * gap) / n;
         let cards_top = inner.top() + 92.0;
         for i in 0..APPS.len() {
             let rect = Rect::from_min_size(
@@ -410,13 +411,17 @@ impl Setup {
             bold(18.0),
             text,
         );
-        painter.text(
-            pos2(rect.center().x, rect.top() + 168.0),
-            Align2::CENTER_CENTER,
-            APPS[i].what,
+        // La ligne sous le nom, sur deux lignes si la carte est trop étroite.
+        let color = if enabled { MUTED } else { FAINT };
+        let mut job = egui::text::LayoutJob::simple(
+            APPS[i].what.to_string(),
             regular(13.5),
-            if enabled { MUTED } else { FAINT },
+            color,
+            rect.width() - 24.0,
         );
+        job.halign = egui::Align::Center;
+        let galley = painter.layout_job(job);
+        painter.galley(pos2(rect.center().x, rect.top() + 159.0), galley, color);
     }
 
     /// L'installation, puis son résultat.
@@ -469,11 +474,16 @@ impl Setup {
             MUTED,
         );
         // Une ligne par logiciel.
-        let row_h = 58.0;
+        // Leur hauteur s'adapte au nombre de logiciels, pour laisser la place aux boutons.
+        let gap = 8.0;
+        let space = inner.bottom() - 62.0 - (inner.top() + 84.0);
+        let count = jobs.len().max(1) as f32;
+        let row_h = ((space - (count - 1.0) * gap) / count).clamp(44.0, 58.0);
+        let icon_size = (row_h - 16.0).min(40.0);
         let time = ui.input(|i| i.time);
         for (n, (i, step)) in jobs.iter().enumerate() {
             let row = Rect::from_min_size(
-                pos2(inner.left(), inner.top() + 84.0 + n as f32 * (row_h + 8.0)),
+                pos2(inner.left(), inner.top() + 84.0 + n as f32 * (row_h + gap)),
                 vec2(inner.width(), row_h),
             );
             painter.rect_filled(
@@ -482,8 +492,10 @@ impl Setup {
                 Color32::from_rgba_unmultiplied(255, 255, 255, 200),
             );
             painter.rect_stroke(row, 14.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
-            let icon =
-                Rect::from_center_size(pos2(row.left() + 34.0, row.center().y), vec2(40.0, 40.0));
+            let icon = Rect::from_center_size(
+                pos2(row.left() + 34.0, row.center().y),
+                Vec2::splat(icon_size),
+            );
             painter.image(
                 self.icons[*i].id(),
                 icon,

@@ -9,6 +9,7 @@ fichier**, `LuskOffice-Setup-Windows.exe`, où l'on coche les logiciels à insta
 | Lusk Texte | Traitement de texte | [declic29/LuskTX](https://github.com/declic29/lusktx)         |
 | Lusk Diapo | Présentations       | [declic29/lusk-diapo](https://github.com/declic29/lusk-diapo) |
 | Lusk PDF   | Atelier PDF         | [declic29/Lusk_Pdf](https://github.com/declic29/lusk_pdf)     |
+| Lusk.bzh   | Moteur de recherche breton | [www.lusk.bzh](https://www.lusk.bzh) (appli web)       |
 
 ## Télécharger
 
@@ -18,6 +19,11 @@ Le fichier contient les quatre logiciels : il marche sans Internet (pratique sur
 Windows demande une seule fois l'autorisation d'installer, puis les logiciels cochés
 s'installent pour tous les utilisateurs du PC. Un logiciel déjà installé dans une version plus
 ancienne est mis à jour ; un logiciel déjà à jour est grisé.
+
+Lusk.bzh, le moteur de recherche breton (« Ce que vous cherchez ne regarde que vous. »), est une
+appli web : Lusk Office crée un raccourci qui ouvre https://www.lusk.bzh avec Microsoft Edge dans
+sa propre fenêtre, comme « Installer ce site en tant qu'application », dans le menu Démarrer (et
+sur le Bureau si la case est cochée). Il faut donc Internet pour s'en servir.
 
 Chaque logiciel reste ensuite indépendant : il se désinstalle depuis « Applications installées »
 de Windows et se met à jour par son propre menu.

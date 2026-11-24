@@ -19,15 +19,26 @@ pub struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub desktop: &'static str,
     pub icon: &'static [u8],
+    /// Pour une appli web (Lusk.bzh) : son adresse, ouverte par Edge dans sa propre fenêtre.
+    /// Les autres sont des logiciels installés par leur `.msi`.
+    pub web: Option<&'static str>,
 }
 
-pub const APPS: [App; 4] = [
+/// La version de l'appli web telle que Lusk Office l'installe (ses raccourcis), pas celle du site.
+const WEB_VERSION: &str = "1.0.0";
+/// La phrase qui accompagne Lusk.bzh dans ses raccourcis.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WEB_SLOGAN: &str =
+    "Lusk.bzh, moteur de recherche breton. Ce que vous cherchez ne regarde que vous.";
+
+pub const APPS: [App; 5] = [
     App {
         name: "Lusk Texte",
         what: "Traitement de texte",
         key: "LuskTexte",
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/texte.png"),
+        web: None,
     },
     App {
         name: "Lusk Tab",
@@ -35,6 +46,7 @@ pub const APPS: [App; 4] = [
         key: "LuskTab",
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/tab.png"),
+        web: None,
     },
     App {
         name: "Lusk Diapo",
@@ -42,6 +54,7 @@ pub const APPS: [App; 4] = [
         key: "LuskDiapo",
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/diapo.png"),
+        web: None,
     },
     App {
         name: "Lusk PDF",
@@ -49,6 +62,15 @@ pub const APPS: [App; 4] = [
         key: "LuskPdf",
         desktop: "INSTALLDESKTOPSHORTCUT",
         icon: include_bytes!("../assets/apps/pdf.png"),
+        web: None,
+    },
+    App {
+        name: "Lusk.bzh",
+        what: "Moteur de recherche breton",
+        key: "LuskBzh",
+        desktop: "",
+        icon: include_bytes!("../assets/apps/web.png"),
+        web: Some("https://www.lusk.bzh"),
     },
 ];
 
@@ -68,9 +90,9 @@ pub enum Status {
 /// L'état de chaque logiciel, pour ce PC.
 pub fn statuses() -> Vec<Status> {
     APPS.iter()
-        .zip(PAYLOAD.iter())
-        .map(|(app, payload)| {
-            let Some((_, version)) = payload else {
+        .enumerate()
+        .map(|(i, app)| {
+            let Some((_, version)) = payload(i) else {
                 return Status::Missing;
             };
             match installed_version(app).map(|(v, _)| v) {
@@ -86,10 +108,16 @@ pub fn statuses() -> Vec<Status> {
 /// La version incluse dans le paquet (vide si inconnue).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn bundled_version(i: usize) -> &'static str {
-    PAYLOAD
-        .get(i)
-        .and_then(|p| p.as_ref())
-        .map_or("", |(_, v)| v)
+    payload(i).map_or("", |(_, v)| v)
+}
+
+/// Ce que le paquet contient pour ce logiciel : son `.msi` et sa version. Une appli web n'a
+/// pas de `.msi` (contenu vide) : elle est toujours disponible.
+fn payload(i: usize) -> Option<(&'static [u8], &'static str)> {
+    match APPS.get(i)?.web {
+        Some(_) => Some((&[], WEB_VERSION)),
+        None => PAYLOAD.get(i).copied().flatten(),
+    }
 }
 
 /// `a` est-elle plus récente que `b` ? (`1.0.10` > `1.0.9`)
@@ -254,7 +282,10 @@ fn set(shared: &Arc<Mutex<Progress>>, ctx: &egui::Context, f: impl FnOnce(&mut P
 fn install(i: usize, desktop: bool) -> Step {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let Some((bytes, _)) = PAYLOAD[i] else {
+    if let Some(url) = APPS[i].web {
+        return install_web(&APPS[i], url, desktop);
+    }
+    let Some((bytes, _)) = payload(i) else {
         return Step::Failed("Ce logiciel n'est pas dans ce paquet.".into());
     };
     let dir = std::env::temp_dir().join("LuskOffice");
@@ -299,6 +330,166 @@ fn install(i: usize, desktop: bool) -> Step {
     }
 }
 
+/// Une appli web : un raccourci qui ouvre l'adresse avec Edge dans sa propre fenêtre (comme
+/// « Installer ce site en tant qu'application »), dans le menu Démarrer de tous les
+/// utilisateurs et, si on l'a choisi, sur leur Bureau. Elle est inscrite dans « Applications
+/// installées », avec un petit script qui la retire.
+#[cfg(windows)]
+fn install_web(app: &App, url: &str, desktop: bool) -> Step {
+    use std::os::windows::process::CommandExt;
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, KEY_WRITE};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Some(edge) = edge_path() else {
+        return Step::Failed(format!(
+            "Microsoft Edge est introuvable sur ce PC : {} s'ouvre avec lui.",
+            app.name
+        ));
+    };
+    let folder = |var: &str| std::env::var_os(var).map(std::path::PathBuf::from);
+    let (Some(programs), Some(data), Some(public)) = (
+        folder("ProgramFiles"),
+        folder("ProgramData"),
+        folder("PUBLIC"),
+    ) else {
+        return Step::Failed("Les dossiers de Windows sont introuvables.".into());
+    };
+    let dir = programs.join("Lusk").join(app.name);
+    let ico = dir.join("lusk-bzh.ico");
+    let script = dir.join("desinstaller.ps1");
+    let lnk = format!("{}.lnk", app.name);
+    let start_menu = data
+        .join(r"Microsoft\Windows\Start Menu\Programs")
+        .join(&lnk);
+    let on_desktop = public.join("Desktop").join(&lnk);
+    let uninstall_key = format!(
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{}",
+        app.name
+    );
+    // Le script de désinstallation (il se relance en administrateur s'il le faut).
+    let quote = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
+    let uninstall = format!(
+        "\u{feff}# {name} : desinstallation (installe par Lusk Office).\r\n\
+         $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\r\n\
+         if (-not $admin) {{\r\n\
+         \x20 Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',\"`\"$PSCommandPath`\"\"\r\n\
+         \x20 exit\r\n\
+         }}\r\n\
+         Remove-Item -LiteralPath '{start}' -Force -ErrorAction SilentlyContinue\r\n\
+         Remove-Item -LiteralPath '{desk}' -Force -ErrorAction SilentlyContinue\r\n\
+         Remove-Item -LiteralPath 'HKLM:\\{key}' -Recurse -Force -ErrorAction SilentlyContinue\r\n\
+         Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue\r\n",
+        name = app.name,
+        start = quote(&start_menu),
+        desk = quote(&on_desktop),
+        key = uninstall_key.replace('\'', "''"),
+        dir = quote(&dir),
+    );
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&ico, include_bytes!("../assets/lusk-bzh.ico")))
+        .and_then(|()| std::fs::write(&script, uninstall));
+    if let Err(e) = written {
+        return Step::Failed(format!("Impossible de préparer {} ({e}).", app.name));
+    }
+    // Les raccourcis, faits par Windows lui-même (PowerShell). Les chemins passent par
+    // l'environnement : pas de souci de guillemets ni d'accents.
+    let mut links = vec![start_menu.display().to_string()];
+    if desktop {
+        links.push(on_desktop.display().to_string());
+    } else {
+        let _ = std::fs::remove_file(&on_desktop);
+    }
+    const MAKE_LINKS: &str = "$ErrorActionPreference = 'Stop'; \
+        $shell = New-Object -ComObject WScript.Shell; \
+        foreach ($path in $env:LUSK_LINKS.Split('|')) { \
+          $link = $shell.CreateShortcut($path); \
+          $link.TargetPath = $env:LUSK_EDGE; \
+          $link.Arguments = $env:LUSK_ARGS; \
+          $link.IconLocation = $env:LUSK_ICON + ',0'; \
+          $link.Description = $env:LUSK_DESC; \
+          $link.WorkingDirectory = $env:LUSK_DIR; \
+          $link.Save() \
+        }";
+    let made = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ])
+        .arg(MAKE_LINKS)
+        .env("LUSK_LINKS", links.join("|"))
+        .env("LUSK_EDGE", &edge)
+        .env("LUSK_ARGS", format!("--app={url}"))
+        .env("LUSK_ICON", &ico)
+        .env("LUSK_DESC", WEB_SLOGAN)
+        .env("LUSK_DIR", &dir)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    match made {
+        Ok(s) if s.success() => {}
+        Ok(_) => return Step::Failed("Windows n'a pas pu créer les raccourcis.".into()),
+        Err(e) => return Step::Failed(format!("PowerShell n'a pas pu démarrer ({e}).")),
+    }
+    // L'inscription dans « Applications installées ».
+    let registered = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .create_subkey_with_flags(&uninstall_key, KEY_WRITE | KEY_WOW64_64KEY)
+        .and_then(|(key, _)| {
+            key.set_value("DisplayName", &app.name)?;
+            key.set_value("DisplayVersion", &WEB_VERSION)?;
+            key.set_value("Publisher", &"Lusk")?;
+            key.set_value("DisplayIcon", &ico.display().to_string())?;
+            key.set_value("InstallLocation", &dir.display().to_string())?;
+            key.set_value("URLInfoAbout", &url)?;
+            key.set_value("Comments", &WEB_SLOGAN)?;
+            key.set_value(
+                "UninstallString",
+                &format!(
+                    "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"",
+                    script.display()
+                ),
+            )?;
+            key.set_value("NoModify", &1u32)?;
+            key.set_value("NoRepair", &1u32)?;
+            key.set_value("EstimatedSize", &120u32)
+        });
+    match registered {
+        Ok(()) => Step::Done,
+        Err(e) => Step::Failed(format!(
+            "{} est installé, mais pas inscrit dans « Applications installées » ({e}).",
+            app.name
+        )),
+    }
+}
+
+/// Où est Microsoft Edge (présent sur tous les Windows 10 et 11).
+#[cfg(windows)]
+fn edge_path() -> Option<std::path::PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    const APP_PATH: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe";
+    let registered = [KEY_WOW64_64KEY, KEY_WOW64_32KEY]
+        .into_iter()
+        .find_map(|view| {
+            RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey_with_flags(APP_PATH, KEY_READ | view)
+                .and_then(|k| k.get_value::<String, _>(""))
+                .ok()
+        });
+    let usual = ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(|var| {
+            std::env::var_os(var)
+                .map(|p| std::path::PathBuf::from(p).join(r"Microsoft\Edge\Application\msedge.exe"))
+        });
+    registered
+        .map(|p| std::path::PathBuf::from(p.trim_matches('"')))
+        .into_iter()
+        .chain(usual)
+        .find(|p| p.is_file())
+}
+
 /// Le message d'un code de retour de Windows Installer.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn failure(code: i32, log: &std::path::Path) -> String {
@@ -335,7 +526,7 @@ fn log_says(log: &std::path::Path, text: &str) -> bool {
 #[cfg(not(windows))]
 fn install(i: usize, _desktop: bool) -> Step {
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    if PAYLOAD[i].is_none() {
+    if payload(i).is_none() {
         return Step::Failed("Ce logiciel n'est pas dans ce paquet.".into());
     }
     match std::env::var("LUSK_FAKE_FAIL").ok().as_deref() {
