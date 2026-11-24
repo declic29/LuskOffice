@@ -11,6 +11,10 @@ pub struct App {
     /// Le nom affiché, et celui sous lequel Windows le range dans « Applications installées ».
     pub name: &'static str,
     pub what: &'static str,
+    /// La clé `HKCU\Software\…` où son installateur note `InstallDir` quand il est installé
+    /// pour l'utilisateur seul (Windows ne le range alors pas dans les listes habituelles).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub key: &'static str,
     pub icon: &'static [u8],
 }
 
@@ -18,21 +22,25 @@ pub const APPS: [App; 4] = [
     App {
         name: "Lusk Texte",
         what: "Traitement de texte",
+        key: "LuskTexte",
         icon: include_bytes!("../assets/apps/texte.png"),
     },
     App {
         name: "Lusk Tab",
         what: "Tableur",
+        key: "LuskTab",
         icon: include_bytes!("../assets/apps/tab.png"),
     },
     App {
         name: "Lusk Diapo",
         what: "Présentations",
+        key: "LuskDiapo",
         icon: include_bytes!("../assets/apps/diapo.png"),
     },
     App {
         name: "Lusk PDF",
         what: "Atelier PDF",
+        key: "LuskPdf",
         icon: include_bytes!("../assets/apps/pdf.png"),
     },
 ];
@@ -58,7 +66,7 @@ pub fn statuses() -> Vec<Status> {
             let Some((_, version)) = payload else {
                 return Status::Missing;
             };
-            match installed_version(app.name).map(|(v, _)| v) {
+            match installed_version(app).map(|(v, _)| v) {
                 None => Status::New,
                 Some(v) if !version.is_empty() && newer(version, &v) => Status::Older(v),
                 Some(v) if version.is_empty() => Status::Older(v),
@@ -92,13 +100,59 @@ pub fn newer(a: &str, b: &str) -> bool {
     a > b
 }
 
-/// La version installée, et si elle l'est pour l'utilisateur seul (pas pour tout le PC).
+/// La version installée (vide si inconnue), et si elle l'est pour l'utilisateur seul.
 #[cfg(windows)]
-fn installed_version(name: &str) -> Option<(String, bool)> {
+fn installed_version(app: &App) -> Option<(String, bool)> {
     use winreg::RegKey;
     use winreg::enums::{
         HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     };
+    let matches = |entry: &RegKey| {
+        let display: String = entry.get_value("DisplayName").unwrap_or_default();
+        display.trim().eq_ignore_ascii_case(app.name)
+    };
+    // 1. Installé pour l'utilisateur seul : l'installateur l'a noté dans HKCU.
+    let per_user = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(format!(r"Software\{}", app.key))
+        .and_then(|k| k.get_value::<String, _>("InstallDir"))
+        .is_ok_and(|dir| std::path::Path::new(&dir).exists());
+    if per_user {
+        // Sa version est rangée par Windows Installer, sous le compte de l'utilisateur.
+        const USERDATA: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData";
+        let version = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey_with_flags(USERDATA, KEY_READ | KEY_WOW64_64KEY)
+            .ok()
+            .and_then(|users| {
+                users
+                    .enum_keys()
+                    .flatten()
+                    .filter(|sid| sid != "S-1-5-18")
+                    .find_map(|sid| {
+                        let products = users
+                            .open_subkey_with_flags(
+                                format!(r"{sid}\Products"),
+                                KEY_READ | KEY_WOW64_64KEY,
+                            )
+                            .ok()?;
+                        products.enum_keys().flatten().find_map(|p| {
+                            let props = products
+                                .open_subkey_with_flags(
+                                    format!(r"{p}\InstallProperties"),
+                                    KEY_READ | KEY_WOW64_64KEY,
+                                )
+                                .ok()?;
+                            matches(&props).then(|| {
+                                props
+                                    .get_value::<String, _>("DisplayVersion")
+                                    .unwrap_or_default()
+                            })
+                        })
+                    })
+            })
+            .unwrap_or_default();
+        return Some((version, true));
+    }
+    // 2. Installé pour tout le PC (ou trouvé dans la liste de l'utilisateur).
     const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
     let places = [
         (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
@@ -114,8 +168,7 @@ fn installed_version(name: &str) -> Option<(String, bool)> {
             let Ok(entry) = list.open_subkey_with_flags(&key, KEY_READ | view) else {
                 continue;
             };
-            let display: String = entry.get_value("DisplayName").unwrap_or_default();
-            if display.trim().eq_ignore_ascii_case(name) {
+            if matches(&entry) {
                 return Some((
                     entry.get_value("DisplayVersion").unwrap_or_default(),
                     hive == HKEY_CURRENT_USER,
@@ -128,9 +181,9 @@ fn installed_version(name: &str) -> Option<(String, bool)> {
 
 /// Hors de Windows (essais de l'interface) : `LUSK_FAKE_INSTALLED="tab=1.0.1,pdf=9.0"`.
 #[cfg(not(windows))]
-fn installed_version(name: &str) -> Option<(String, bool)> {
+fn installed_version(app: &App) -> Option<(String, bool)> {
     let fake = std::env::var("LUSK_FAKE_INSTALLED").ok()?;
-    let key = name.trim_start_matches("Lusk ").to_lowercase();
+    let key = app.name.trim_start_matches("Lusk ").to_lowercase();
     fake.split(',').find_map(|pair| {
         pair.split_once('=')
             .filter(|(k, _)| k.trim() == key)
@@ -202,24 +255,25 @@ fn install(i: usize) -> Step {
         return Step::Failed(format!("Impossible de préparer l'installation ({e})."));
     }
     // Pour tout le PC ; mais un logiciel déjà installé pour l'utilisateur seul est mis à jour
-    // au même endroit, sinon Windows en garderait deux.
-    let installed = installed_version(APPS[i].name);
-    let mut scope: Vec<&str> = match &installed {
-        Some((_, true)) => vec!["ALLUSERS=2", "MSIINSTALLPERUSER=1"],
-        _ => vec!["ALLUSERS=1"],
-    };
-    // Déjà installé dans cette version : on le réinstalle (réparation) plutôt que de ne rien faire.
-    if installed
-        .as_ref()
-        .is_some_and(|(v, _)| !newer(bundled_version(i), v))
+    // au même endroit : son installateur refuse sinon (« déjà installé pour votre compte »).
+    let installed = installed_version(&APPS[i]);
+    // Déjà dans cette version : rien à faire (une réparation forcée peut échouer pour rien).
+    if let Some((v, _)) = &installed
+        && !v.is_empty()
+        && !newer(bundled_version(i), v)
     {
-        scope.extend(["REINSTALL=ALL", "REINSTALLMODE=omus"]);
+        let _ = std::fs::remove_file(&msi);
+        return Step::Done;
     }
+    let scope: &[&str] = match &installed {
+        Some((_, true)) => &["ALLUSERS=2", "MSIINSTALLPERUSER=1"],
+        _ => &["ALLUSERS=1"],
+    };
     let status = std::process::Command::new("msiexec.exe")
         .arg("/i")
         .arg(&msi)
         .args(["/qn", "/norestart"])
-        .args(&scope)
+        .args(scope)
         .arg("/l*v")
         .arg(&log)
         .creation_flags(CREATE_NO_WINDOW)
@@ -242,8 +296,28 @@ fn failure(code: i32, log: &std::path::Path) -> String {
         1618 => "Une autre installation est en cours sur ce PC : attendez qu'elle se termine, puis réessayez.".into(),
         1625 | 1643 | 5 => "Windows a refusé l'installation : il faut les droits d'administrateur.".into(),
         1638 => "Une autre version de ce logiciel est déjà installée : désinstallez-la, puis réessayez.".into(),
+        _ if log_says(log, "installé pour votre compte") => {
+            "Ce logiciel est déjà installé pour votre compte seulement : désinstallez-le depuis « Applications installées », puis réessayez.".into()
+        }
         _ => format!("L'installation a échoué (code {code}). Le détail est dans {}.", log.display()),
     }
+}
+
+/// Le journal de Windows Installer (UTF-16 ou UTF-8) contient-il ce texte ?
+fn log_says(log: &std::path::Path, text: &str) -> bool {
+    let Ok(bytes) = std::fs::read(log) else {
+        return false;
+    };
+    let content = if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    content.contains(text)
 }
 
 /// Hors de Windows : une installation pour de faux, pour essayer l'interface.
