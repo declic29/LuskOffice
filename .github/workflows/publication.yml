@@ -1,4 +1,5 @@
-# Lusk Office : fabrique LuskOffice-Setup-Windows.exe et LuskOffice-Setup-Linux avec les
+# Lusk Office : fabrique LuskOffice-Setup-Windows.exe, LuskOffice-Setup-Linux et
+# LuskOffice-Setup-Mac.dmg avec les
 # dernières versions publiées des quatre logiciels, et les dépose dans une Release en brouillon.
 #
 # Les dépôts des logiciels sont publics : le jeton de l'action suffit pour lire leurs Releases.
@@ -133,8 +134,102 @@ jobs:
           name: linux
           path: dist/
 
+  mac:
+    # Un programme universel (Mac Intel et Apple Silicon), macOS 11 et plus récent.
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ secrets.LUSK_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fichiers .dmg des quatre logiciels (dernières versions publiées)
+        run: |
+          set -eu
+          mkdir -p payload
+          while read -r key repo file; do
+            tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+            if [ -z "$tag" ]; then echo "Aucune version publiée pour $repo" >&2; exit 1; fi
+            gh release download "$tag" --repo "$repo" --pattern "$file" --dir payload --clobber
+            if [ ! -f "payload/$file" ]; then echo "$file manque dans la Release $tag de $repo" >&2; exit 1; fi
+            echo "$key=${tag#v}" >> payload/versions.txt
+          done <<'LISTE'
+          tab declic29/LuskTab Lusk-Tab-Mac.dmg
+          texte declic29/lusktx Lusk-Texte-Mac.dmg
+          diapo declic29/lusk-diapo Lusk-Diapo-Mac.dmg
+          pdf declic29/lusk_pdf Lusk-Pdf-Mac.dmg
+          LISTE
+          cat payload/versions.txt
+          ls -l payload
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Vérifications
+        env:
+          LUSK_PAYLOAD_DIR: ${{ runner.temp }}/vide
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Compiler (Apple Silicon et Intel)
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Appli « Lusk Office » et son .dmg
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          stage="$RUNNER_TEMP/dmg"
+          app="$stage/Lusk Office.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/LuskOfficeSetup" \
+            target/aarch64-apple-darwin/release/LuskOfficeSetup \
+            target/x86_64-apple-darwin/release/LuskOfficeSetup
+          # Les .dmg des logiciels sont rangés dans l'appli (src/macos.rs les y cherche).
+          cp payload/*-Mac.dmg "$app/Contents/Resources/"
+          cp assets/lusk-office.icns "$app/Contents/Resources/"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>fr</string>
+            <key>CFBundleDisplayName</key><string>Lusk Office</string>
+            <key>CFBundleName</key><string>Lusk Office</string>
+            <key>CFBundleExecutable</key><string>LuskOfficeSetup</string>
+            <key>CFBundleIconFile</key><string>lusk-office</string>
+            <key>CFBundleIdentifier</key><string>bzh.lusk.office</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSHumanReadableCopyright</key><string>Association Lusk · https://www.lusk.bzh</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$app/Contents/Info.plist"
+          # Signature « ad hoc » (sans certificat Apple), comme les applis Lusk.
+          codesign --force --sign - "$app"
+          codesign --verify --strict --verbose=2 "$app"
+          mkdir -p dist
+          hdiutil create -volname "Lusk Office" -srcfolder "$stage" -ov -format UDZO "dist/LuskOffice-Setup-$version-Mac.dmg"
+          cp "dist/LuskOffice-Setup-$version-Mac.dmg" dist/LuskOffice-Setup-Mac.dmg
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/
+
   publier:
-    needs: [windows, linux]
+    needs: [windows, linux, mac]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -154,6 +249,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: mac
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
           name: versions
 
       - name: Release (brouillon)
@@ -166,6 +266,7 @@ jobs:
             echo
             echo "- **Windows** : téléchargez LuskOffice-Setup-Windows.exe, ouvrez-le et cochez les logiciels à installer."
             echo "- **Linux** (Ubuntu, Linux Mint, Debian et leurs dérivées) : téléchargez LuskOffice-Setup-Linux, autorisez-le à s'exécuter (clic droit, Propriétés, « Autoriser l'exécution » ; ou \`chmod +x LuskOffice-Setup-Linux\`), puis ouvrez-le."
+            echo "- **Mac** (macOS 11 et plus récent) : ouvrez LuskOffice-Setup-Mac.dmg, puis « Lusk Office ». La première fois, macOS le bloque : ouvrez Réglages Système › Confidentialité et sécurité, puis « Ouvrir quand même »."
             echo
             echo "Versions incluses :"
             sed 's/^/- /' versions.txt

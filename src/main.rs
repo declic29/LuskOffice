@@ -7,6 +7,8 @@
 mod install;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use std::sync::{Arc, Mutex};
 
@@ -25,9 +27,17 @@ const ORANGE: Color32 = Color32::from_rgb(0xf7, 0x94, 0x1d);
 const GREEN: Color32 = Color32::from_rgb(0x2e, 0x9e, 0x5b);
 const RED: Color32 = Color32::from_rgb(0xd1, 0x3c, 0x3c);
 const LINE: Color32 = Color32::from_rgb(0xd6, 0xe0, 0xec);
+/// Pour qui ils sont installés.
+const WHERE: &str = if cfg!(target_os = "macos") {
+    "dans le dossier Applications"
+} else {
+    "pour tous les utilisateurs de ce PC"
+};
 /// Où l'on retrouve les logiciels installés.
 const MENU: &str = if cfg!(windows) {
     "menu Démarrer"
+} else if cfg!(target_os = "macos") {
+    "dossier Applications"
 } else {
     "menu des applications"
 };
@@ -277,9 +287,12 @@ impl Setup {
             );
             self.card(ui, i, rect);
         }
-        // Sous les cartes : les icônes sur le Bureau.
+        // Sous les cartes : les icônes sur le Bureau (pas sur Mac, où les applis vont dans le
+        // dossier Applications et le Launchpad).
         let row = Rect::from_min_size(pos2(inner.left(), cards_top + 222.0), vec2(330.0, 28.0));
-        if checkbox(ui, row, "Ajouter les icônes sur le Bureau", self.desktop).clicked() {
+        if !cfg!(target_os = "macos")
+            && checkbox(ui, row, "Ajouter les icônes sur le Bureau", self.desktop).clicked()
+        {
             self.desktop = !self.desktop;
         }
         // Le bas : la note et les boutons.
@@ -287,8 +300,8 @@ impl Setup {
         let bottom = inner.bottom();
         let note = match count {
             0 => "Aucun logiciel choisi.".to_string(),
-            1 => "1 logiciel sera installé pour tous les utilisateurs de ce PC.".to_string(),
-            n => format!("{n} logiciels seront installés pour tous les utilisateurs de ce PC."),
+            1 => format!("1 logiciel sera installé {WHERE}."),
+            n => format!("{n} logiciels seront installés {WHERE}."),
         };
         painter.text(
             pos2(inner.left(), bottom - 34.0),

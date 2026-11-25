@@ -128,7 +128,7 @@ pub fn bundled_version(i: usize) -> &'static str {
 /// Ce que le paquet contient pour ce logiciel : son installateur et sa version. Sous Windows,
 /// l'appli web n'a pas de fichier (contenu vide) : elle est toujours disponible.
 pub fn payload(i: usize) -> Option<(&'static [u8], &'static str)> {
-    if cfg!(windows) && APPS.get(i)?.web.is_some() {
+    if cfg!(any(windows, target_os = "macos")) && APPS.get(i)?.web.is_some() {
         return Some((&[], WEB_VERSION));
     }
     PAYLOAD.get(i).copied().flatten()
@@ -227,12 +227,16 @@ fn installed_version(app: &App) -> Option<(String, bool)> {
     None
 }
 
-/// Sous Linux, d'après dpkg (toujours pour tout le PC).
+/// Sous Linux d'après dpkg, sur Mac d'après l'appli dans le dossier Applications.
 #[cfg(not(windows))]
 fn installed_version(app: &App) -> Option<(String, bool)> {
     #[cfg(target_os = "linux")]
     if !demo() {
         return crate::linux::installed_version(app).map(|v| (v, false));
+    }
+    #[cfg(target_os = "macos")]
+    if !demo() {
+        return crate::macos::installed_version(app).map(|v| (v, false));
     }
     fake_installed(app)
 }
@@ -554,13 +558,17 @@ fn log_says(log: &std::path::Path, text: &str) -> bool {
     content.contains(text)
 }
 
-/// Sous Linux, les paquets `.deb` ; ailleurs, ou pour les essais, une installation pour de
-/// faux.
+/// Sous Linux, les paquets `.deb` ; sur Mac, les applis des `.dmg` ; pour les essais, une
+/// installation pour de faux.
 #[cfg(not(windows))]
 fn install(i: usize, desktop: bool) -> Step {
     #[cfg(target_os = "linux")]
     if !demo() {
         return crate::linux::install(i, desktop);
+    }
+    #[cfg(target_os = "macos")]
+    if !demo() {
+        return crate::macos::install(i);
     }
     let _ = desktop;
     std::thread::sleep(std::time::Duration::from_millis(1500));

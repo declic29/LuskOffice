@@ -4,8 +4,12 @@
 //! (`payload/Lusk-Tab-Linux.deb`…). Un logiciel dont le fichier manque est montré « absent de ce
 //! paquet » : on peut compiler sans rien télécharger.
 //!
-//! Lusk.bzh, l'appli web, n'a rien à télécharger. Sous Windows, Lusk Office crée lui-même ses
-//! raccourcis ; pour Linux, son petit paquet `.deb` (un lanceur, une entrée de menu, l'icône) est
+//! Pour Mac, les `.dmg` (`payload/Lusk-Tab-Mac.dmg`…) ne sont pas inclus dans le programme :
+//! la publication les range dans `Contents/Resources` de « Lusk Office.app ». Ici, seule leur
+//! version est notée.
+//!
+//! Lusk.bzh, l'appli web, n'a rien à télécharger. Sous Windows et sur Mac, Lusk Office crée
+//! lui-même ses raccourcis ; pour Linux, son petit paquet `.deb` (un lanceur, une entrée de menu, l'icône) est
 //! fabriqué ici avec `dpkg-deb`.
 //!
 //! Sous Windows, l'icône et le manifeste (droits d'administrateur) sont ajoutés au programme.
@@ -35,18 +39,28 @@ fn main() {
         "cargo:rerun-if-changed={}",
         dir.join("versions.txt").display()
     );
-    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let windows = os == "windows";
+    let mac = os == "macos";
     let mut out = format!(
         "/// La version de Lusk.bzh installée par Lusk Office.\n\
          #[allow(dead_code)]\n\
          pub const WEB_VERSION: &str = {WEB_VERSION:?};\n\
          /// Les installateurs inclus : (contenu du {}, version), dans l'ordre de `APPS`.\n\
          pub static PAYLOAD: &[Option<(&[u8], &str)>] = &[\n",
-        if windows { ".msi" } else { ".deb" }
+        if windows {
+            ".msi"
+        } else if mac {
+            ".dmg, rangé à côté dans l'appli : contenu vide ici"
+        } else {
+            ".deb"
+        }
     );
     for (key, stem) in APPS {
         let file = if windows {
             format!("{stem}-Windows.msi")
+        } else if mac {
+            format!("{stem}-Mac.dmg")
         } else {
             format!("{stem}-Linux.deb")
         };
@@ -61,7 +75,11 @@ fn main() {
             })
             .map(str::trim)
             .unwrap_or("");
-        if path.is_file() {
+        if path.is_file() && mac {
+            // Sur Mac, les .dmg vont dans `Contents/Resources` de l'appli (le programme est
+            // universel : les inclure ici les mettrait deux fois).
+            let _ = writeln!(out, "    Some((&[], {version:?})),");
+        } else if path.is_file() {
             let path = path.canonicalize().expect("chemin du paquet");
             let _ = writeln!(
                 out,
@@ -74,7 +92,7 @@ fn main() {
         }
     }
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    if !windows {
+    if !windows && !mac {
         #[cfg(unix)]
         let deb = lusk_bzh::deb(&root, &out_dir);
         #[cfg(not(unix))]
