@@ -5,6 +5,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod install;
+#[cfg(target_os = "linux")]
+mod linux;
 
 use std::sync::{Arc, Mutex};
 
@@ -23,6 +25,12 @@ const ORANGE: Color32 = Color32::from_rgb(0xf7, 0x94, 0x1d);
 const GREEN: Color32 = Color32::from_rgb(0x2e, 0x9e, 0x5b);
 const RED: Color32 = Color32::from_rgb(0xd1, 0x3c, 0x3c);
 const LINE: Color32 = Color32::from_rgb(0xd6, 0xe0, 0xec);
+/// Où l'on retrouve les logiciels installés.
+const MENU: &str = if cfg!(windows) {
+    "menu Démarrer"
+} else {
+    "menu des applications"
+};
 const WINDOW: Vec2 = vec2(980.0, 740.0);
 
 fn main() -> eframe::Result {
@@ -449,7 +457,7 @@ impl Setup {
             ),
             (true, 0) => (
                 "C'est prêt !",
-                "Vos logiciels sont dans le menu Démarrer. Bonne découverte !".to_string(),
+                format!("Vos logiciels sont dans le {MENU}. Bonne découverte !"),
             ),
             (true, n) if n == jobs.len() => (
                 "L'installation n'a pas abouti",
@@ -457,7 +465,7 @@ impl Setup {
             ),
             (true, _) => (
                 "Installation terminée, avec une erreur",
-                "Les logiciels installés sont dans le menu Démarrer.".to_string(),
+                format!("Les logiciels installés sont dans le {MENU}."),
             ),
         };
         painter.text(inner.left_top(), Align2::LEFT_TOP, title, bold(24.0), NAVY);

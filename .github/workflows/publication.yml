@@ -1,5 +1,5 @@
-# Lusk Office : fabrique LuskOffice-Setup-Windows.exe avec les dernières versions publiées des
-# quatre logiciels, et le dépose dans une Release en brouillon.
+# Lusk Office : fabrique LuskOffice-Setup-Windows.exe et LuskOffice-Setup-Linux avec les
+# dernières versions publiées des quatre logiciels, et les dépose dans une Release en brouillon.
 #
 # Les dépôts des logiciels sont publics : le jeton de l'action suffit pour lire leurs Releases.
 # S'ils deviennent privés, ajouter un secret LUSK_TOKEN (jeton personnel, lecture des dépôts).
@@ -55,28 +55,125 @@ jobs:
       - name: Compiler
         run: cargo build --release
 
-      - name: Release (brouillon)
+      - name: Fichiers à publier
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          $tag = "v$version"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/LuskOfficeSetup.exe "dist/LuskOffice-Setup-$version-Windows.exe"
           Copy-Item target/release/LuskOfficeSetup.exe dist/LuskOffice-Setup-Windows.exe
-          $lines = Get-Content payload/versions.txt
-          $notes = @(
-            "Lusk Office $version, publié par l'association Lusk.",
-            "",
-            "Téléchargez LuskOffice-Setup-Windows.exe : un seul fichier, où l'on coche les logiciels à installer.",
-            "",
-            "Versions incluses :"
-          ) + ($lines | ForEach-Object { "- $_" })
-          $notes | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/notes.md"
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag (Get-ChildItem dist).FullName --clobber
-          } else {
-            gh release create $tag (Get-ChildItem dist).FullName --draft --target $env:GITHUB_SHA --title "Lusk Office $version" --notes-file "$env:RUNNER_TEMP/notes.md"
-          }
-          Write-Host "Brouillon prêt : https://github.com/$env:GH_REPO/releases"
+          Copy-Item payload/versions.txt versions.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: versions
+          path: versions.txt
+
+  linux:
+    # Ubuntu 22.04 : le programme marche ensuite sur Ubuntu 22.04 et plus récent, Linux Mint 21
+    # et plus récent, Debian 12 et plus récent.
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.LUSK_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Paquets .deb des quatre logiciels (dernières versions publiées)
+        run: |
+          set -eu
+          mkdir -p payload
+          while read -r key repo file; do
+            tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+            if [ -z "$tag" ]; then echo "Aucune version publiée pour $repo" >&2; exit 1; fi
+            gh release download "$tag" --repo "$repo" --pattern "$file" --dir payload --clobber
+            if [ ! -f "payload/$file" ]; then echo "$file manque dans la Release $tag de $repo" >&2; exit 1; fi
+            echo "$key=${tag#v}" >> payload/versions.txt
+            echo "$repo $tag : $(stat -c %s "payload/$file") octets"
+          done <<'LISTE'
+          tab declic29/LuskTab Lusk-Tab-Linux.deb
+          texte declic29/lusktx Lusk-Texte-Linux.deb
+          diapo declic29/lusk-diapo Lusk-Diapo-Linux.deb
+          pdf declic29/lusk_pdf Lusk-Pdf-Linux.deb
+          LISTE
+          cat payload/versions.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Vérifications
+        # Sans les paquets (plus rapide) : ils ne changent rien au code vérifié.
+        env:
+          LUSK_PAYLOAD_DIR: ${{ runner.temp }}/vide
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Compiler
+        run: cargo build --release
+
+      - name: Fichiers à publier
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          mkdir -p dist
+          install -m 755 target/release/LuskOfficeSetup "dist/LuskOffice-Setup-$version-Linux"
+          install -m 755 target/release/LuskOfficeSetup dist/LuskOffice-Setup-Linux
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  publier:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: versions
+
+      - name: Release (brouillon)
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+          {
+            echo "Lusk Office $version, publié par l'association Lusk."
+            echo
+            echo "- **Windows** : téléchargez LuskOffice-Setup-Windows.exe, ouvrez-le et cochez les logiciels à installer."
+            echo "- **Linux** (Ubuntu, Linux Mint, Debian et leurs dérivées) : téléchargez LuskOffice-Setup-Linux, autorisez-le à s'exécuter (clic droit, Propriétés, « Autoriser l'exécution » ; ou \`chmod +x LuskOffice-Setup-Linux\`), puis ouvrez-le."
+            echo
+            echo "Versions incluses :"
+            sed 's/^/- /' versions.txt
+            echo "- lusk.bzh (appli web)"
+          } > "$RUNNER_TEMP/notes.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" --title "Lusk Office $version" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          echo "Brouillon prêt : https://github.com/$GH_REPO/releases"

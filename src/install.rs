@@ -19,13 +19,17 @@ pub struct App {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub desktop: &'static str,
     pub icon: &'static [u8],
-    /// Pour une appli web (Lusk.bzh) : son adresse, ouverte par Edge dans sa propre fenêtre.
-    /// Les autres sont des logiciels installés par leur `.msi`.
+    /// Pour une appli web (Lusk.bzh) : son adresse. Sous Windows, Edge l'ouvre dans sa propre
+    /// fenêtre ; sous Linux, elle a son petit paquet `.deb` comme les autres.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub web: Option<&'static str>,
+    /// Son paquet `.deb` sous Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub package: &'static str,
+    /// Le nom de son entrée de menu sous Linux (`<linux_id>.desktop`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub linux_id: &'static str,
 }
-
-/// La version de l'appli web telle que Lusk Office l'installe (ses raccourcis), pas celle du site.
-const WEB_VERSION: &str = "1.0.0";
 /// La phrase qui accompagne Lusk.bzh dans ses raccourcis.
 #[cfg_attr(not(windows), allow(dead_code))]
 const WEB_SLOGAN: &str =
@@ -39,6 +43,8 @@ pub const APPS: [App; 5] = [
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/texte.png"),
         web: None,
+        package: "lusk-texte",
+        linux_id: "bzh.lusk.texte",
     },
     App {
         name: "Lusk Tab",
@@ -47,6 +53,8 @@ pub const APPS: [App; 5] = [
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/tab.png"),
         web: None,
+        package: "lusk-tab",
+        linux_id: "bzh.lusk.tab",
     },
     App {
         name: "Lusk Diapo",
@@ -55,6 +63,8 @@ pub const APPS: [App; 5] = [
         desktop: "LUSKDESKTOP",
         icon: include_bytes!("../assets/apps/diapo.png"),
         web: None,
+        package: "lusk-diapo",
+        linux_id: "bzh.lusk.diapo",
     },
     App {
         name: "Lusk PDF",
@@ -63,6 +73,8 @@ pub const APPS: [App; 5] = [
         desktop: "INSTALLDESKTOPSHORTCUT",
         icon: include_bytes!("../assets/apps/pdf.png"),
         web: None,
+        package: "lusk-pdf",
+        linux_id: "bzh.lusk.pdf",
     },
     App {
         name: "Lusk.bzh",
@@ -71,6 +83,8 @@ pub const APPS: [App; 5] = [
         desktop: "",
         icon: include_bytes!("../assets/apps/web.png"),
         web: Some("https://www.lusk.bzh"),
+        package: "lusk-bzh",
+        linux_id: "bzh.lusk.bzh",
     },
 ];
 
@@ -111,16 +125,15 @@ pub fn bundled_version(i: usize) -> &'static str {
     payload(i).map_or("", |(_, v)| v)
 }
 
-/// Ce que le paquet contient pour ce logiciel : son `.msi` et sa version. Une appli web n'a
-/// pas de `.msi` (contenu vide) : elle est toujours disponible.
-fn payload(i: usize) -> Option<(&'static [u8], &'static str)> {
-    match APPS.get(i)?.web {
-        Some(_) => Some((&[], WEB_VERSION)),
-        None => PAYLOAD.get(i).copied().flatten(),
+/// Ce que le paquet contient pour ce logiciel : son installateur et sa version. Sous Windows,
+/// l'appli web n'a pas de fichier (contenu vide) : elle est toujours disponible.
+pub fn payload(i: usize) -> Option<(&'static [u8], &'static str)> {
+    if cfg!(windows) && APPS.get(i)?.web.is_some() {
+        return Some((&[], WEB_VERSION));
     }
+    PAYLOAD.get(i).copied().flatten()
 }
 
-/// `a` est-elle plus récente que `b` ? (`1.0.10` > `1.0.9`)
 pub fn newer(a: &str, b: &str) -> bool {
     let parts = |s: &str| {
         s.trim_start_matches('v')
@@ -214,9 +227,28 @@ fn installed_version(app: &App) -> Option<(String, bool)> {
     None
 }
 
-/// Hors de Windows (essais de l'interface) : `LUSK_FAKE_INSTALLED="tab=1.0.1,pdf=9.0"`.
+/// Sous Linux, d'après dpkg (toujours pour tout le PC).
 #[cfg(not(windows))]
 fn installed_version(app: &App) -> Option<(String, bool)> {
+    #[cfg(target_os = "linux")]
+    if !demo() {
+        return crate::linux::installed_version(app).map(|v| (v, false));
+    }
+    fake_installed(app)
+}
+
+/// Essais de l'interface (`LUSK_DEMO`, `LUSK_FAKE_INSTALLED`, `LUSK_FAKE_FAIL`) : rien n'est
+/// vraiment installé.
+#[cfg(not(windows))]
+fn demo() -> bool {
+    ["LUSK_DEMO", "LUSK_FAKE_INSTALLED", "LUSK_FAKE_FAIL"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+}
+
+/// Pour les essais : `LUSK_FAKE_INSTALLED="tab=1.0.1,pdf=9.0"`.
+#[cfg(not(windows))]
+fn fake_installed(app: &App) -> Option<(String, bool)> {
     let fake = std::env::var("LUSK_FAKE_INSTALLED").ok()?;
     let key = app.name.trim_start_matches("Lusk ").to_lowercase();
     fake.split(',').find_map(|pair| {
@@ -522,9 +554,15 @@ fn log_says(log: &std::path::Path, text: &str) -> bool {
     content.contains(text)
 }
 
-/// Hors de Windows : une installation pour de faux, pour essayer l'interface.
+/// Sous Linux, les paquets `.deb` ; ailleurs, ou pour les essais, une installation pour de
+/// faux.
 #[cfg(not(windows))]
-fn install(i: usize, _desktop: bool) -> Step {
+fn install(i: usize, desktop: bool) -> Step {
+    #[cfg(target_os = "linux")]
+    if !demo() {
+        return crate::linux::install(i, desktop);
+    }
+    let _ = desktop;
     std::thread::sleep(std::time::Duration::from_millis(1500));
     if payload(i).is_none() {
         return Step::Failed("Ce logiciel n'est pas dans ce paquet.".into());

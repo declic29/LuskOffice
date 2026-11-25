@@ -1,9 +1,9 @@
 [package]
 name = "lusk-office-setup"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Installateur de Lusk Office : Lusk Tab, Lusk Texte, Lusk Diapo et Lusk PDF en un seul programme"
+description = "Installateur de Lusk Office (Windows et Linux) : Lusk Texte, Lusk Tab, Lusk Diapo, Lusk PDF et Lusk.bzh en un seul programme"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/declic29/LuskOffice"
 publish = false
