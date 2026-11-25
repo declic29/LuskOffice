@@ -219,7 +219,10 @@ jobs:
           codesign --force --sign - "$app"
           codesign --verify --strict --verbose=2 "$app"
           mkdir -p dist
-          hdiutil create -volname "Lusk Office" -srcfolder "$stage" -ov -format UDZO "dist/LuskOffice-Setup-$version-Mac.dmg"
+          # La taille de l'image est donnée : hdiutil la sous-estime quand le contenu est déjà
+          # compressé (les .dmg des logiciels), et manque alors de place.
+          size=$(( $(du -sm "$stage" | cut -f1) * 12 / 10 + 50 ))
+          hdiutil create -volname "Lusk Office" -srcfolder "$stage" -size "${size}m" -fs HFS+ -ov -format UDZO "dist/LuskOffice-Setup-$version-Mac.dmg"
           cp "dist/LuskOffice-Setup-$version-Mac.dmg" dist/LuskOffice-Setup-Mac.dmg
           ls -l dist
 
